@@ -10,18 +10,18 @@
 const API = "http://localhost:5000/api";
 
 const BANDS = [
-    { key: "below_40", label: "Below 40%", emoji: "🔴", color: "#ff4d4d" },
-    { key: "40_50", label: "40% – 50%", emoji: "🟠", color: "#ff8c00" },
-    { key: "50_60", label: "50% – 60%", emoji: "🟡", color: "#f59e0b" },
-    { key: "60_80", label: "60% – 80%", emoji: "🟢", color: "#10b981" },
-    { key: "above_80", label: "80% & Above", emoji: "🌟", color: "#7c4dff" },
+    { key: "below_40", label: "Below 40%", color: "var(--band-red)" },
+    { key: "40_50", label: "40% – 50%", color: "var(--band-orange)" },
+    { key: "50_60", label: "50% – 60%", color: "var(--band-yellow)" },
+    { key: "60_80", label: "60% – 80%", color: "var(--band-green)" },
+    { key: "above_80", label: "80% & Above", color: "var(--band-purple)" },
 ];
 
 const LABEL_CONFIG = {
-    Poor: { color: "#ff4d4d", emoji: "🔴" },
-    Average: { color: "#f59e0b", emoji: "🟡" },
-    Best: { color: "#10b981", emoji: "🟢" },
-    Excellent: { color: "#7c4dff", emoji: "⭐" },
+    Poor: { color: "var(--label-poor)" },
+    Average: { color: "var(--label-average)" },
+    Best: { color: "var(--label-best)" },
+    Excellent: { color: "var(--label-excellent)" },
 };
 
 // State
@@ -43,6 +43,9 @@ function initTheme() {
 
 async function init() {
     initTheme();
+    if (window.lucide) {
+        lucide.createIcons();
+    }
     try {
         const [analysis, subjects] = await Promise.all([
             fetchJSON(`${API}/analysis`),
@@ -89,13 +92,30 @@ document.getElementById("searchInput").addEventListener("input", e => {
     renderAll();
 });
 
-document.querySelectorAll(".tab-btn").forEach(btn => {
+const TAB_INFO = {
+    bands: { title: "Grade Bands", desc: "Overview of academic performance" },
+    performance: { title: "AI Performance Analysis", desc: "Subject-wise labels and insights per student" },
+    summary: { title: "Class Summary", desc: "Averages, min/max scores, and band breakdowns" }
+};
+
+document.querySelectorAll(".nav-item").forEach(btn => {
     btn.addEventListener("click", () => {
         _activeTab = btn.dataset.tab;
-        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+
+        // Update active class
+        document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
+
+        // Update sections
         document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
         document.getElementById(`section-${_activeTab}`)?.classList.add("active");
+
+        // Update header title/desc
+        const info = TAB_INFO[_activeTab];
+        if (info) {
+            document.getElementById("page-title").textContent = info.title;
+            document.querySelector(".header-title p").textContent = info.desc;
+        }
     });
 });
 
@@ -146,7 +166,6 @@ function renderBands() {
         card.style.animationDelay = `${i * 0.06}s`;
         card.innerHTML = `
       <div class="band-header" style="border-top: 3px solid ${band.color}">
-        <span class="band-emoji">${band.emoji}</span>
         <span class="band-label-text" style="color:${band.color}">${band.label}</span>
         <span class="band-count">${bandStudents.length} students · ${pct}%</span>
       </div>
@@ -208,16 +227,16 @@ function renderPerformanceTable() {
       <td style="color:var(--text-muted)">${idx + 1}</td>
       <td style="font-weight:600">${toTitleCase(student.name)}</td>
       <td style="font-weight:700;color:${student.overall_band_color}">${student.overall_avg}%</td>
-      <td><span class="perf-badge" style="background:${labelCfg.color}22;color:${labelCfg.color}">
-        ${labelCfg.emoji} ${student.overall_label}
+      <td><span class="perf-badge" style="background:${labelCfg.color}22;color:${labelCfg.color};border:1px solid ${labelCfg.color}40">
+        ${student.overall_label}
       </span></td>
       ${subjects.map(subj => {
             const s = subjMap[subj];
             if (!s) return `<td style="color:var(--text-muted)">—</td>`;
             const lc = LABEL_CONFIG[s.performance_label] || {};
             return `<td>
-          <span class="perf-badge" style="background:${lc.color}22;color:${lc.color};font-size:10px">
-            ${lc.emoji} ${s.performance_label}
+          <span class="perf-badge" style="background:${lc.color}22;color:${lc.color};border:1px solid ${lc.color}40;font-size:10px">
+            ${s.performance_label}
           </span>
           <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${s.percentage}%</div>
         </td>`;
@@ -246,7 +265,7 @@ function renderClassSummary() {
             const cnt = data.band_counts[b.key] || 0;
             const w = Math.round((cnt / total) * 100);
             return `<div class="mini-bar-row">
-        <div class="mini-bar-label">${b.emoji} ${b.label}</div>
+        <div class="mini-bar-label">${b.label}</div>
         <div class="mini-bar-track">
           <div class="mini-bar-fill" style="width:0%;background:${b.color}" data-w="${w}"></div>
         </div>
@@ -256,13 +275,13 @@ function renderClassSummary() {
 
         const labelRows = Object.entries(data.label_counts).map(([lbl, cnt]) => {
             const lc = LABEL_CONFIG[lbl] || {};
-            return `<span class="perf-badge" style="background:${lc.color}22;color:${lc.color};margin:2px">
-        ${lc.emoji} ${lbl}: ${cnt}
+            return `<span class="perf-badge" style="background:${lc.color}22;color:${lc.color};border:1px solid ${lc.color}40;margin:2px">
+        ${lbl}: ${cnt}
       </span>`;
         }).join("");
 
         card.innerHTML = `
-      <div class="subject-card-name">📘 ${subj}</div>
+      <div class="subject-card-name">${subj}</div>
       <div class="subject-stats">
         <div class="subj-stat">
           <div class="subj-stat-val" style="color:#7c4dff">${data.avg}%</div>
