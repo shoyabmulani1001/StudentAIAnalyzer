@@ -18,10 +18,7 @@ INT_SHEET  = "CO Int. Attn"
 EXT_SHEET  = "CO Ext. Attn"
 DETAILS_SHEET = "SubjectDetails"
 
-# Max marks
-INT_MAX   = 25
-EXT_MAX   = 50
-TOTAL_MAX = 75
+# Max marks constants removed since we detect dynamically
 
 
 # ── Subject name ──────────────────────────────────────────────────────────────
@@ -47,25 +44,30 @@ def _get_subject_name(wb: openpyxl.Workbook, filename: str) -> str:
 def _find_total_col(ws) -> tuple:
     """
     Dynamically find the column index of 'Total Marks Obtained' and the
-    raw maximum (100 or 25) so we can scale to /25.
+    raw maximum (e.g., 25, 40, etc.).
     """
     for row in ws.iter_rows(max_row=15, values_only=True):
         for idx, cell in enumerate(row):
             if cell and isinstance(cell, str) and "total marks obtained" in cell.lower():
-                raw_max = 25
+                raw_max = 25 # default if not found
                 m = re.search(r"\((\d+)\)", cell)
+                if m:
+                    raw_max = int(m.group(1))
+                return idx, raw_max
+            elif cell and isinstance(cell, str) and ("out of" in cell.lower() or "max marks" in cell.lower()):
+                raw_max = 25
+                m = re.search(r"(\d+)", cell)
                 if m:
                     raw_max = int(m.group(1))
                 return idx, raw_max
     return None, 25
 
 
-def _read_internal(ws) -> Dict[str, Dict]:
+def _read_internal(ws) -> tuple:
     """
     Parse CO Int. Attn sheet.
-    Dynamically detects the 'Total Marks Obtained' column.
-    Values stored out of 100 are scaled to /25.
-    Returns dict: { STUDENT_NAME -> {seat_no, internal_marks} }
+    Dynamically detects the 'Total Marks Obtained' column and maximum marks.
+    Returns tuple: ({ STUDENT_NAME -> {seat_no, internal_marks} }, max_marks)
     """
     total_col, raw_max = _find_total_col(ws)
     students = {}
@@ -105,25 +107,33 @@ def _read_internal(ws) -> Dict[str, Dict]:
                 except (ValueError, TypeError):
                     pass
 
-        if internal is not None:
-            scaled = round((internal / raw_max) * 25, 2) if raw_max != 25 else round(internal, 2)
-        else:
-            scaled = None
+        if name and internal is not None:
+            students[name] = {"seat_no": seat_no, "internal_marks": round(internal, 2)}
 
-        if name and scaled is not None:
-            students[name] = {"seat_no": seat_no, "internal_marks": scaled}
-
-    return students
+    return students, raw_max
 
 
 # ── External sheet ────────────────────────────────────────────────────────────
 
-def _read_external(ws) -> Dict[str, Dict]:
+def _read_external(ws) -> tuple:
     """
     Parse CO Ext. Attn sheet.
-    Columns: 0=Roll, 1=SeatNo, 2=Name, 3=Marks(/50)
-    Returns dict: { STUDENT_NAME -> {seat_no, external_marks} }
+    Columns: 0=Roll, 1=SeatNo, 2=Name, 3=Marks
+    Detects max marks from headers, default 50.
+    Returns tuple: ({ STUDENT_NAME -> {seat_no, external_marks} }, max_marks)
     """
+    max_marks = 50
+    # Search for max marks in the first few rows
+    for row in ws.iter_rows(max_row=5, values_only=True):
+         for cell in row:
+             if cell and isinstance(cell, str) and ("out of" in cell.lower() or "max" in cell.lower() or "total" in cell.lower()):
+                 m = re.search(r"\((\d+)\)", cell)
+                 if not m:
+                     m = re.search(r"(\d+)", cell)
+                 if m:
+                     max_marks = int(m.group(1))
+                     break
+
     students = {}
     for row in ws.iter_rows(values_only=True):
         if row[0] is None:
@@ -140,13 +150,21 @@ def _read_external(ws) -> Dict[str, Dict]:
         if len(row) > 3 and row[3] is not None:
             try:
                 external = float(row[3])
+                if external > max_marks:
+                     # Attempt to find it in other columns if index 3 is out of bounds
+                     for col_idx in range(4, len(row)):
+                         if row[col_idx] is not None:
+                             val = float(row[col_idx])
+                             if val <= max_marks:
+                                 external = val
+                                 break
             except (ValueError, TypeError):
                 pass
 
-        if name and external is not None:
+        if name and external is not None and external <= max_marks:
             students[name] = {"seat_no": seat_no, "external_marks": round(external, 2)}
 
-    return students
+    return students, max_marks
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -157,9 +175,8 @@ def read_all_files() -> List[Dict[str, Any]]:
     [
       {
         name, seat_no, subject,
-        internal_marks (/25), external_marks (/50),
-        total_marks (/75), percentage,
-        file
+        obtained_marks, max_marks,
+        percentage, file
       }, ...
     ]
     """
@@ -169,6 +186,9 @@ def read_all_files() -> List[Dict[str, Any]]:
         return records
 
     files = sorted(f for f in os.listdir(EXCEL_DIR) if f.endswith(".xlsx"))
+    
+    # Map normalized canonical name parts to the first seen display name
+    global_name_map = {}
 
     for filename in files:
         filepath = os.path.join(EXCEL_DIR, filename)
@@ -184,8 +204,24 @@ def read_all_files() -> List[Dict[str, Any]]:
             print(f"[WARN] Missing sheets in {filename}: {wb.sheetnames}")
             continue
 
-        internal_data = _read_internal(wb[INT_SHEET])
-        external_data = _read_external(wb[EXT_SHEET])
+        internal_data, internal_max = _read_internal(wb[INT_SHEET])
+        external_data, external_max = _read_external(wb[EXT_SHEET])
+
+        # If data exists for both internal and external, add them. Otherwise just the available max
+        has_internal = len(internal_data) > 0
+        has_external = len(external_data) > 0
+
+        # Calculate subject max dynamically
+        if has_internal and has_external:
+             subject_max = internal_max + external_max
+        elif has_internal:
+             subject_max = internal_max
+        elif has_external:
+             subject_max = external_max
+        else:
+             subject_max = internal_max + external_max
+
+        print(f"{subject} -> {subject_max}")
 
         all_names = set(internal_data.keys()) | set(external_data.keys())
 
@@ -203,16 +239,24 @@ def read_all_files() -> List[Dict[str, Any]]:
             internal = internal if internal is not None else 0.0
             external = external if external is not None else 0.0
 
-            total      = internal + external
-            percentage = round((total / TOTAL_MAX) * 100, 2)
+            total = internal + external
+            percentage = round((total / subject_max) * 100, 2) if subject_max > 0 else 0
+            
+            # Create a canonical key to resolve names like "AJAYKUMAR PHAD" vs "PHAD AJAYKUMAR"
+            canonical_key = tuple(sorted(name.split()))
+            if canonical_key not in global_name_map:
+                # Prefer names that likely start with Surname (often the majority format in Indian universities)
+                # But to keep it simple, just use the first format encountered as the consistent name
+                global_name_map[canonical_key] = name
+            
+            display_name = global_name_map[canonical_key]
 
             records.append({
-                "name":           name,
+                "name":           display_name,
                 "seat_no":        seat_no,
                 "subject":        subject,
-                "internal_marks": internal,
-                "external_marks": external,
-                "total_marks":    total,
+                "obtained_marks": total,
+                "max_marks":      subject_max,
                 "percentage":     percentage,
                 "file":           filename,
             })
